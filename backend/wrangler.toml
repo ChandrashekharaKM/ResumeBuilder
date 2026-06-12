@@ -1,18 +1,20 @@
 name = "holdmyresume-backend"
 main = "src/index.ts"
 compatibility_date = "2024-06-11"
+workers_dev = true
 
-[vars]
-JWT_SECRET = "super-secret-local-development-key-1234567890"
+# JWT_SECRET is stored as a Wrangler secret for production:
+#   wrangler secret put JWT_SECRET
+# For local dev, it is read from .dev.vars (never committed).
 
 [[kv_namespaces]]
 binding = "LIMITER_KV"
-id = "local-limiter-kv"
+id = "c90092a9a4de4965b8a90e7b423a3f8f"
 
 [[d1_databases]]
 binding = "DB"
 database_name = "holdmyresume-db"
-database_id = "local-holdmyresume-db"
+database_id = "a11d79c2-1784-4a8c-9c79-47db91193914"
 migrations_dir = "migrations"
 
 [ai]

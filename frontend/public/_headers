@@ -1,0 +1,33 @@
+# Cloudflare Pages — HTTP Security Headers
+# Applied to every response served from https://holdmyresume.pages.dev
+# Docs: https://developers.cloudflare.com/pages/configuration/headers/
+
+/*
+  # Prevent MIME-type sniffing attacks
+  X-Content-Type-Options: nosniff
+
+  # Block the site from being embedded in iframes on other origins
+  X-Frame-Options: SAMEORIGIN
+
+  # Enable browser XSS filter (legacy browsers)
+  X-XSS-Protection: 1; mode=block
+
+  # Control referrer information sent with requests
+  Referrer-Policy: strict-origin-when-cross-origin
+
+  # Restrict browser feature access
+  Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=(), usb=()
+
+  # Force HTTPS for 1 year, include subdomains
+  Strict-Transport-Security: max-age=31536000; includeSubDomains; preload
+
+  # Content Security Policy
+  # - default-src: only same origin
+  # - script-src: allow self + Vite inline hashes + Google Fonts scripts (none)
+  # - style-src: allow self + Google Fonts CSS
+  # - img-src: self + data URIs (for inline SVG/logo)
+  # - connect-src: self + our backend Worker
+  # - font-src: Google Fonts
+  # - object-src: block Flash/plugin embeds
+  # - frame-ancestors: prevent clickjacking
+  Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob:; connect-src 'self' https://holdmyresume-backend.chandrashekharakm07.workers.dev; object-src 'none'; frame-ancestors 'none';
