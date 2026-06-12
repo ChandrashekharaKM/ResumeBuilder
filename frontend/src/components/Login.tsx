@@ -1,5 +1,5 @@
 import { useState, useCallback } from 'react';
-import { Mail, Lock, Eye, EyeOff, LogIn, UserPlus, AlertCircle, CheckCircle2 } from 'lucide-react';
+import { Mail, Lock, Eye, EyeOff, LogIn, UserPlus, AlertCircle, CheckCircle2, ArrowLeft, Send } from 'lucide-react';
 import Logo from './Logo';
 
 interface LoginProps {
@@ -7,7 +7,7 @@ interface LoginProps {
   apiBaseUrl?: string;
 }
 
-type Tab = 'login' | 'register';
+type Tab = 'login' | 'register' | 'forgot';
 
 interface PasswordStrength {
   score: 0 | 1 | 2 | 3 | 4;
@@ -98,6 +98,41 @@ export default function Login({ onLogin }: LoginProps) {
     }
   };
 
+  // ── FORGOT PASSWORD ──────────────────────────────────────────
+  const handleForgotPassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError('');
+    setSuccess('');
+
+    if (!email) {
+      setError('Please enter your email address.');
+      return;
+    }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      setError('Please enter a valid email address.');
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const res = await fetch(`${API_BASE}/auth/forgot-password`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: email.trim().toLowerCase() }),
+      });
+      const data = await res.json() as { success: boolean; message?: string };
+      if (data.success) {
+        setSuccess(data.message || 'If that email exists, a reset link has been sent.');
+      } else {
+        setError(data.message || 'Something went wrong. Please try again.');
+      }
+    } catch {
+      setError('Connection error. Please check your network and try again.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
   // ── REGISTER ─────────────────────────────────────────────────
   const handleRegister = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -168,27 +203,29 @@ export default function Login({ onLogin }: LoginProps) {
           </div>
         </div>
 
-        {/* Tabs */}
-        <div className="auth-tabs">
-          <button
-            id="auth-tab-login"
-            className={`auth-tab${tab === 'login' ? ' active' : ''}`}
-            onClick={() => switchTab('login')}
-            type="button"
-          >
-            <LogIn size={15} />
-            Sign In
-          </button>
-          <button
-            id="auth-tab-register"
-            className={`auth-tab${tab === 'register' ? ' active' : ''}`}
-            onClick={() => switchTab('register')}
-            type="button"
-          >
-            <UserPlus size={15} />
-            Create Account
-          </button>
-        </div>
+        {/* Tabs — hidden in forgot-password view */}
+        {tab !== 'forgot' && (
+          <div className="auth-tabs">
+            <button
+              id="auth-tab-login"
+              className={`auth-tab${tab === 'login' ? ' active' : ''}`}
+              onClick={() => switchTab('login')}
+              type="button"
+            >
+              <LogIn size={15} />
+              Sign In
+            </button>
+            <button
+              id="auth-tab-register"
+              className={`auth-tab${tab === 'register' ? ' active' : ''}`}
+              onClick={() => switchTab('register')}
+              type="button"
+            >
+              <UserPlus size={15} />
+              Create Account
+            </button>
+          </div>
+        )}
 
         {/* Alerts */}
         {error && (
@@ -261,7 +298,7 @@ export default function Login({ onLogin }: LoginProps) {
               <button
                 type="button"
                 style={{ background: 'none', border: 'none', color: 'var(--primary)', fontSize: '0.82rem', cursor: 'pointer', fontFamily: 'var(--font-sans)', fontWeight: 500 }}
-                onClick={() => setError('Password reset via email coming soon. Contact support if needed.')}
+                onClick={() => switchTab('forgot')}
               >
                 Forgot password?
               </button>
@@ -421,6 +458,78 @@ export default function Login({ onLogin }: LoginProps) {
               </button>
             </p>
           </form>
+        )}
+
+        {/* ── FORGOT PASSWORD VIEW ── */}
+        {tab === 'forgot' && (
+          <div>
+            {/* Back button */}
+            <button
+              type="button"
+              onClick={() => switchTab('login')}
+              style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', background: 'none', border: 'none', color: 'var(--text-muted)', fontSize: '0.85rem', cursor: 'pointer', fontFamily: 'var(--font-sans)', marginBottom: '1.5rem', padding: 0 }}
+            >
+              <ArrowLeft size={15} /> Back to Sign In
+            </button>
+
+            <h2 style={{ margin: '0 0 0.5rem', fontSize: '1.2rem', fontWeight: 700, color: 'var(--text-color)' }}>Reset your password</h2>
+            <p style={{ margin: '0 0 1.5rem', fontSize: '0.88rem', color: 'var(--text-muted)', lineHeight: 1.6 }}>
+              Enter your account email and we'll send you a secure reset link. Valid for 1 hour.
+            </p>
+
+            {!success ? (
+              <form onSubmit={handleForgotPassword} noValidate>
+                <div className="form-group">
+                  <label className="form-label" htmlFor="forgot-email">Email Address</label>
+                  <div style={{ position: 'relative' }}>
+                    <Mail size={15} color="var(--text-muted)" style={{ position: 'absolute', left: '0.9rem', top: '50%', transform: 'translateY(-50%)', pointerEvents: 'none' }} />
+                    <input
+                      id="forgot-email"
+                      type="email"
+                      autoComplete="email"
+                      required
+                      className="form-input"
+                      placeholder="you@example.com"
+                      style={{ width: '100%', paddingLeft: '2.5rem' }}
+                      value={email}
+                      onChange={(e) => setEmail(e.target.value)}
+                      disabled={loading}
+                    />
+                  </div>
+                </div>
+
+                <button
+                  id="btn-forgot-submit"
+                  type="submit"
+                  className="btn btn-primary"
+                  style={{ width: '100%' }}
+                  disabled={loading}
+                >
+                  {loading
+                    ? <><span className="auth-spinner" />Sending link...</>
+                    : <><Send size={15} />Send Reset Link</>}
+                </button>
+              </form>
+            ) : (
+              <div style={{ textAlign: 'center', padding: '1rem 0' }}>
+                <div style={{ width: 56, height: 56, borderRadius: '50%', background: 'rgba(16,185,129,0.12)', border: '1px solid rgba(16,185,129,0.3)', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 1rem' }}>
+                  <CheckCircle2 size={26} color="var(--success)" />
+                </div>
+                <h3 style={{ margin: '0 0 0.5rem', color: 'var(--text-color)', fontSize: '1rem', fontWeight: 700 }}>Check your inbox</h3>
+                <p style={{ margin: '0 0 1.5rem', color: 'var(--text-muted)', fontSize: '0.875rem', lineHeight: 1.6 }}>
+                  If <strong style={{ color: 'var(--text-color)' }}>{email}</strong> has an account, a reset link is on its way. Check your spam folder if it doesn't arrive within a minute.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => switchTab('login')}
+                  className="btn btn-secondary"
+                  style={{ width: '100%' }}
+                >
+                  <LogIn size={15} /> Back to Sign In
+                </button>
+              </div>
+            )}
+          </div>
         )}
 
         {/* Footer note */}

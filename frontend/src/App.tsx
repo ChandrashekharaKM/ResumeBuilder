@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import Login from './components/Login';
 import Dashboard from './components/Dashboard';
+import ResetPassword from './components/ResetPassword';
 import { X } from 'lucide-react';
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8787';
@@ -10,6 +11,12 @@ function App() {
   const [userEmail, setUserEmail] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [showAuthModal, setShowAuthModal] = useState(false);
+
+  // Detect password reset token in URL (?reset_token=...)
+  const [resetToken, setResetToken] = useState<string | null>(() => {
+    const params = new URLSearchParams(window.location.search);
+    return params.get('reset_token');
+  });
 
   // Check for persistent session on mount
   useEffect(() => {
@@ -28,6 +35,7 @@ function App() {
     localStorage.setItem('auth_token', newToken);
     localStorage.setItem('user_email', email);
     setShowAuthModal(false);
+    setResetToken(null);
   };
 
   const handleLogout = () => {
@@ -45,12 +53,25 @@ function App() {
     );
   }
 
+  // ── Password reset flow: show full-page reset form ──────────
+  if (resetToken) {
+    return (
+      <ResetPassword
+        token={resetToken}
+        onDone={() => {
+          setResetToken(null);
+          setShowAuthModal(true); // Open login modal after reset
+        }}
+      />
+    );
+  }
+
   return (
     <>
-      <Dashboard 
-        apiBaseUrl={API_BASE_URL} 
-        token={token} 
-        userEmail={userEmail || 'guest.user@example.com'} 
+      <Dashboard
+        apiBaseUrl={API_BASE_URL}
+        token={token}
+        userEmail={userEmail || 'guest.user@example.com'}
         onLogout={handleLogout}
         guestMode={!token}
         onOpenAuth={() => setShowAuthModal(true)}

@@ -8,6 +8,7 @@ type Bindings = {
   AI: any
   JWT_SECRET: string
   FRONTEND_URL?: string
+  RESEND_API_KEY?: string
 }
 
 const app = new Hono<{ Bindings: Bindings }>()
@@ -336,6 +337,246 @@ app.post('/auth/login', async (c) => {
   } catch (err) {
     console.error('Login error:', err)
     return c.json({ success: false, message: 'Login failed. Please try again.' }, 500)
+  }
+})
+
+// ============================================================
+// PASSWORD RESET HELPERS
+// ============================================================
+
+/**
+ * Hash a token with SHA-256 for safe storage.
+ * The raw token is sent to the user; only the hash is stored in DB.
+ */
+async function sha256Hex(input: string): Promise<string> {
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(input))
+  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('')
+}
+
+/**
+ * Send a password reset email via Resend (https://resend.com).
+ * Requires RESEND_API_KEY secret set on the Worker.
+ * Falls back gracefully in dev mode if key is missing.
+ */
+async function sendPasswordResetEmail(
+  to: string,
+  resetLink: string,
+  apiKey: string
+): Promise<void> {
+  const html = `
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="margin:0;padding:0;background:#0b0f19;font-family:'Inter',Arial,sans-serif">
+  <table width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;margin:40px auto;background:#121826;border-radius:16px;border:1px solid rgba(255,255,255,0.08);overflow:hidden">
+    <tr><td style="background:linear-gradient(135deg,#6366f1,#06b6d4);padding:32px;text-align:center">
+      <h1 style="margin:0;color:#fff;font-size:24px;font-weight:800;letter-spacing:-0.02em">HoldMy<span style="color:#a5f3fc">Resume</span></h1>
+    </td></tr>
+    <tr><td style="padding:40px 32px">
+      <h2 style="margin:0 0 12px;color:#e2e8f0;font-size:20px;font-weight:700">Reset your password</h2>
+      <p style="margin:0 0 24px;color:#94a3b8;font-size:15px;line-height:1.6">We received a request to reset your password. Click the button below to choose a new one. This link expires in <strong style="color:#e2e8f0">1 hour</strong>.</p>
+      <a href="${resetLink}" style="display:inline-block;padding:14px 32px;background:#6366f1;color:#fff;border-radius:8px;text-decoration:none;font-weight:700;font-size:15px">Reset Password</a>
+      <p style="margin:24px 0 0;color:#64748b;font-size:12px;line-height:1.6">If you didn't request this, you can safely ignore this email. Your password won't change.<br><br>Or copy this link: <span style="color:#94a3b8;word-break:break-all">${resetLink}</span></p>
+    </td></tr>
+    <tr><td style="padding:20px 32px;border-top:1px solid rgba(255,255,255,0.06);text-align:center">
+      <p style="margin:0;color:#475569;font-size:12px">© 2026 HoldMyResume · <a href="https://holdmyresume.pages.dev" style="color:#6366f1;text-decoration:none">holdmyresume.pages.dev</a></p>
+    </td></tr>
+  </table>
+</body></html>`
+
+  const res = await fetch('https://api.resend.com/emails', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      from: 'HoldMyResume <onboarding@resend.dev>',
+      to: [to],
+      subject: 'Reset your HoldMyResume password',
+      html,
+    }),
+  })
+
+  if (!res.ok) {
+    const err = await res.text()
+    console.error('Resend email error:', err)
+    throw new Error('Email delivery failed')
+  }
+}
+
+// ============================================================
+// AUTH ROUTES — Forgot / Reset Password
+// ============================================================
+
+/**
+ * POST /auth/forgot-password
+ * Body: { email: string }
+ * Always returns 200 (no email enumeration).
+ * Sends a reset link via Resend if the account exists.
+ *
+ * Security:
+ *  - Rate limited: 3 req / 1 hour per IP
+ *  - Token: 32-byte random hex, SHA-256 hashed before storage
+ *  - Expires: 1 hour
+ */
+app.post('/auth/forgot-password', async (c) => {
+  const ip = c.req.header('CF-Connecting-IP') || c.req.header('X-Forwarded-For') || 'unknown'
+  const frontendUrl = c.env.FRONTEND_URL || 'http://localhost:5173'
+
+  // Rate limit: 3 per hour per IP
+  if (c.env.LIMITER_KV) {
+    try {
+      const windowKey = Math.floor(Date.now() / (60 * 60 * 1000))
+      const kvKey = `forgot_limit:${ip}:${windowKey}`
+      const count = parseInt((await c.env.LIMITER_KV.get(kvKey)) || '0', 10)
+      if (count >= 3) {
+        // Still return 200 — don't reveal rate limiting to enumeration bots
+        return c.json({ success: true, message: 'If that email exists, a reset link has been sent.' })
+      }
+      await c.env.LIMITER_KV.put(kvKey, (count + 1).toString(), { expirationTtl: 3600 })
+    } catch { /* non-fatal */ }
+  }
+
+  let email = ''
+  try {
+    const body = await c.req.json()
+    email = (body.email || '').trim().toLowerCase()
+  } catch {
+    return c.json({ success: false, message: 'Invalid request format.' }, 400)
+  }
+
+  if (!email || email.length > 320) {
+    // Generic success response regardless of validation failure
+    return c.json({ success: true, message: 'If that email exists, a reset link has been sent.' })
+  }
+
+  try {
+    const user = await c.env.DB.prepare(
+      'SELECT id, email FROM users WHERE email = ? AND password_hash IS NOT NULL'
+    ).bind(email).first<{ id: string; email: string }>()
+
+    // Always respond the same way — don't reveal whether user exists
+    if (user) {
+      const resendKey = c.env.RESEND_API_KEY
+      if (!resendKey) {
+        console.warn('RESEND_API_KEY not set — skipping email send')
+      } else {
+        // Generate a cryptographically random token
+        const rawToken = Array.from(crypto.getRandomValues(new Uint8Array(32)))
+          .map(b => b.toString(16).padStart(2, '0')).join('')
+        const tokenHash = await sha256Hex(rawToken)
+
+        // Expire 1 hour from now
+        const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString()
+          .replace('T', ' ').replace(/\.\d+Z$/, '')
+
+        // Clean up any previous unused tokens for this user
+        await c.env.DB.prepare(
+          'DELETE FROM password_reset_tokens WHERE user_id = ? AND used_at IS NULL'
+        ).bind(user.id).run()
+
+        // Store hashed token
+        await c.env.DB.prepare(
+          'INSERT INTO password_reset_tokens (id, user_id, token_hash, expires_at) VALUES (?, ?, ?, ?)'
+        ).bind(crypto.randomUUID(), user.id, tokenHash, expiresAt).run()
+
+        const resetLink = `${frontendUrl}?reset_token=${rawToken}`
+        await sendPasswordResetEmail(user.email, resetLink, resendKey)
+      }
+    }
+  } catch (err) {
+    console.error('Forgot password error:', err)
+    // Still return 200 — don't reveal errors
+  }
+
+  return c.json({ success: true, message: 'If that email exists, a reset link has been sent.' })
+})
+
+/**
+ * POST /auth/reset-password
+ * Body: { token: string, password: string }
+ * Validates the token, updates password, marks token used.
+ *
+ * Security:
+ *  - Rate limited: 5 req / 15 min per IP
+ *  - Token is SHA-256 hashed and compared — never stored raw
+ *  - Token expires after 1 hour
+ *  - Token is single-use (used_at set on redemption)
+ */
+app.post('/auth/reset-password', async (c) => {
+  const ip = c.req.header('CF-Connecting-IP') || c.req.header('X-Forwarded-For') || 'unknown'
+
+  // Rate limiting
+  if (await isAuthRateLimited(c.env.LIMITER_KV, `reset:${ip}`)) {
+    return c.json(
+      { success: false, message: 'Too many attempts. Please wait 15 minutes.' },
+      429,
+      { 'Retry-After': '900' }
+    )
+  }
+  await incrementAuthAttempt(c.env.LIMITER_KV, `reset:${ip}`)
+
+  let rawToken = '', newPassword = ''
+  try {
+    const body = await c.req.json()
+    rawToken = (body.token || '').trim()
+    newPassword = (body.password || '')
+  } catch {
+    return c.json({ success: false, message: 'Invalid request format.' }, 400)
+  }
+
+  if (!rawToken || !newPassword) {
+    return c.json({ success: false, message: 'Token and new password are required.' }, 400)
+  }
+  if (newPassword.length < 8) {
+    return c.json({ success: false, message: 'Password must be at least 8 characters.' }, 400)
+  }
+  if (newPassword.length > 128) {
+    return c.json({ success: false, message: 'Password is too long.' }, 400)
+  }
+
+  try {
+    const tokenHash = await sha256Hex(rawToken)
+
+    const record = await c.env.DB.prepare(`
+      SELECT prt.id, prt.user_id, prt.expires_at, prt.used_at
+      FROM password_reset_tokens prt
+      WHERE prt.token_hash = ?
+    `).bind(tokenHash).first<{
+      id: string
+      user_id: string
+      expires_at: string
+      used_at: string | null
+    }>()
+
+    if (!record) {
+      return c.json({ success: false, message: 'This reset link is invalid or has already been used.' }, 400)
+    }
+    if (record.used_at) {
+      return c.json({ success: false, message: 'This reset link has already been used. Please request a new one.' }, 400)
+    }
+    if (new Date(record.expires_at + 'Z') < new Date()) {
+      return c.json({ success: false, message: 'This reset link has expired. Please request a new one.' }, 400)
+    }
+
+    // Hash new password and update user
+    const newHash = await hashPassword(newPassword)
+    await c.env.DB.prepare(
+      'UPDATE users SET password_hash = ? WHERE id = ?'
+    ).bind(newHash, record.user_id).run()
+
+    // Mark token as used
+    const usedAt = new Date().toISOString().replace('T', ' ').replace(/\.\d+Z$/, '')
+    await c.env.DB.prepare(
+      'UPDATE password_reset_tokens SET used_at = ? WHERE id = ?'
+    ).bind(usedAt, record.id).run()
+
+    return c.json({ success: true, message: 'Password updated successfully. You can now log in.' })
+
+  } catch (err) {
+    console.error('Reset password error:', err)
+    return c.json({ success: false, message: 'Password reset failed. Please try again.' }, 500)
   }
 })
 
