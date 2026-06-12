@@ -1,6 +1,10 @@
 # ─── Dependencies ────────────────────────────────────────────
 node_modules/
 
+# ─── Wrangler / Cloudflare Workers ───────────────────────────
+.wrangler/
+backend/.wrangler/
+
 # ─── Build outputs ───────────────────────────────────────────
 dist/
 build/
